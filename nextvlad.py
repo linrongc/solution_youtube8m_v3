@@ -9,19 +9,9 @@ flags.DEFINE_float("drop_rate", 0.5, "dropout ratio after VLAD encoding")
 flags.DEFINE_integer("expansion", 2, "expansion ratio in Group NetVlad")
 flags.DEFINE_integer("gating_reduction", 8, "reduction factor in se context gating")
 
-flags.DEFINE_string("sub_pool_func", "avg_pool", "pooling function for strides")
-flags.DEFINE_integer("lstm_hidden", 512, "the hidden dimmension of lstm")
-
 flags.DEFINE_integer("mix_number", 3, "the number of gvlad models")
 flags.DEFINE_float("cl_temperature", 2, "temperature in collaborative learning")
 flags.DEFINE_float("cl_lambda", 1.0, "penalty factor of cl loss")
-flags.DEFINE_float("diversity", 0., "coefficient for diversity penalty")
-flags.DEFINE_integer("path_num", 4, "the number of paths")
-flags.DEFINE_integer("aux_groups", 16, "the number of aux groups in bilinear NeXtVLAD")
-flags.DEFINE_boolean("apply_relu", False, "whether apply relu in nextvlad")
-flags.DEFINE_integer("aux_expansion", 1, "aux expansion ratio in double netvlad model")
-flags.DEFINE_float("final_drop", 0., "dropout ratio at final activation")
-
 
 
 class NeXtVLAD():
@@ -244,9 +234,6 @@ class MixNeXtVladModel(models.BaseModel):
                                            scope="mix_weights")
         mix_weights = tf.nn.softmax(mix_weights, axis=-1)
         tf.summary.histogram("mix_weights", mix_weights)
-        epsilon = 1e-8
-        mix_entropy = tf.negative(tf.reduce_sum(tf.multiply(mix_weights, tf.log(mix_weights + epsilon)), axis=-1, keepdims=False))
-        tf.summary.histogram("mix_entropy", mix_entropy)
 
         results = []
         for n in range(mix_number):
@@ -273,17 +260,12 @@ class MixNeXtVladModel(models.BaseModel):
                                 axis=-1)
 
         regularization_loss = FLAGS.cl_lambda * tf.reduce_mean(tf.reduce_sum(kl_loss, axis=-1), axis=-1)
-        if FLAGS.diversity > 0.:
-            regularization_loss = regularization_loss + FLAGS.diversity * mix_entropy
         return  {
             "predictions": pred,
             "regularization_loss": regularization_loss,
             "aux_predictions": aux_preds,
             "logits": mix_logit
             }
-        # else:
-        #     return {"predictions": pred}
-            # return {"predictions": results[0]["predictions"]}
 
     def nextvlad_model(self, video_ftr, audio_ftr, vocab_size, max_frames,
                        cluster_size, groups, drop_rate, hidden1_size,
