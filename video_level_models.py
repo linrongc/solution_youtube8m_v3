@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Contains model definitions."""
 import math
 
@@ -23,35 +24,37 @@ import tensorflow.contrib.slim as slim
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer(
-    "moe_num_mixtures", 2,
+    "moe_num_mixtures", 4,
     "The number of mixtures (excluding the dummy 'expert') used for MoeModel.")
+flags.DEFINE_float(
+    "l2_penalty", 1e-8,
+    "the l2 penalty of classifier weights and bias"
+)
 
+flags.DEFINE_boolean("video_trainable", True, "video level model trainable parameter")
 
 class LogisticModel(models.BaseModel):
   """Logistic model with L2 regularization."""
 
-  def create_model(self,
-                   model_input,
-                   vocab_size,
-                   l2_penalty=1e-8,
-                   **unused_params):
+  def create_model(self, model_input, vocab_size, l2_penalty=None, **unused_params):
     """Creates a logistic model.
-
     Args:
       model_input: 'batch' x 'num_features' matrix of input features.
       vocab_size: The number of classes in the dataset.
-
     Returns:
       A dictionary with a tensor containing the probability predictions of the
       model in the 'predictions' key. The dimensions of the tensor are
-      batch_size x num_classes.
-    """
-    output = slim.fully_connected(
-        model_input,
-        vocab_size,
-        activation_fn=tf.nn.sigmoid,
-        weights_regularizer=slim.l2_regularizer(l2_penalty))
-    return {"predictions": output}
+      batch_size x num_classes."""
+    l2_penalty = l2_penalty or FLAGS.l2_penalty
+    logits = slim.fully_connected(
+        model_input, vocab_size, activation_fn=None,
+        weights_regularizer=slim.l2_regularizer(l2_penalty),
+        biases_regularizer=slim.l2_regularizer(l2_penalty),
+        weights_initializer=slim.variance_scaling_initializer(),
+        trainable=FLAGS.video_trainable
+    )
+    output = tf.nn.sigmoid(logits)
+    return {"predictions": output, "logits": logits}
 
 
 class MoeModel(models.BaseModel):
@@ -61,14 +64,12 @@ class MoeModel(models.BaseModel):
                    model_input,
                    vocab_size,
                    num_mixtures=None,
-                   l2_penalty=1e-8,
+                   l2_penalty=None,
                    **unused_params):
     """Creates a Mixture of (Logistic) Experts model.
-
      The model consists of a per-class softmax distribution over a
      configurable number of logistic classifiers. One of the classifiers in the
      mixture is not trained, and always predicts 0.
-
     Args:
       model_input: 'batch_size' x 'num_features' matrix of input features.
       vocab_size: The number of classes in the dataset.
@@ -76,12 +77,12 @@ class MoeModel(models.BaseModel):
         always predicts the non-existence of an entity).
       l2_penalty: How much to penalize the squared magnitudes of parameter
         values.
-
     Returns:
       A dictionary with a tensor containing the probability predictions of the
       model in the 'predictions' key. The dimensions of the tensor are
       batch_size x num_classes.
     """
+    l2_penalty = l2_penalty or FLAGS.l2_penalty
     num_mixtures = num_mixtures or FLAGS.moe_num_mixtures
 
     gate_activations = slim.fully_connected(
@@ -98,16 +99,17 @@ class MoeModel(models.BaseModel):
         weights_regularizer=slim.l2_regularizer(l2_penalty),
         scope="experts")
 
-    gating_distribution = tf.nn.softmax(
-        tf.reshape(
-            gate_activations,
-            [-1, num_mixtures + 1]))  # (Batch * #Labels) x (num_mixtures + 1)
-    expert_distribution = tf.nn.sigmoid(
-        tf.reshape(expert_activations,
-                   [-1, num_mixtures]))  # (Batch * #Labels) x num_mixtures
+    gating_distribution = tf.nn.softmax(tf.reshape(
+        gate_activations,
+        [-1, num_mixtures + 1]))  # (Batch * #Labels) x (num_mixtures + 1)
+    expert_distribution = tf.reshape(expert_activations,
+        [-1, num_mixtures])  # (Batch * #Labels) x num_mixtures
 
-    final_probabilities_by_class_and_batch = tf.reduce_sum(
+    final_logits_by_class_and_batch = tf.reduce_sum(
         gating_distribution[:, :num_mixtures] * expert_distribution, 1)
-    final_probabilities = tf.reshape(final_probabilities_by_class_and_batch,
+
+
+    final_logits = tf.reshape(final_logits_by_class_and_batch,
                                      [-1, vocab_size])
-    return {"predictions": final_probabilities}
+    final_probabilities = tf.nn.sigmoid(final_logits)
+    return {"predictions": final_probabilities, "logits": final_logits}
